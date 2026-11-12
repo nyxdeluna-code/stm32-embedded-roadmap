@@ -1,0 +1,22 @@
+# Build output
+Debug/
+Release/
+build/
+*.o
+*.d
+*.elf
+*.bin
+*.hex
+*.list
+*.su
+*.cyclo
+
+# STM32CubeIDE
+.settings/
+.metadata/
+
+# Windows / editor
+Thumbs.db
+.vscode/
+*.log
+docs/*.pdf
