@@ -29,3 +29,40 @@ Bảng vector là `g_pfnVectors` (dòng 132, sau `Default_Handler`). Trong chip,
 1. Chip khởi động bằng hai giá trị đầu bảng vector, phần cứng tự làm trước khi có bất kỳ dòng code C nào.
 2. `.data` và `.bss` phải được khởi tạo trước `main`, nên biến toàn cục luôn có giá trị đúng khi `main` chạy.
 3. Cần phân biệt "ô nhớ ở địa chỉ X" với "giá trị nằm trong ô đó".
+
+## Ngày 2: Linker script (`STM32F103C8TX_FLASH.ld`) và file `.map`
+
+### Bộ nhớ của chip (khối `MEMORY`)
+| Vùng | Địa chỉ bắt đầu | Dung lượng | Quyền |
+|---|---|---|---|
+| Flash | `0x08000000` | 64 KB | đọc, chạy lệnh (rx) |
+| RAM | `0x20000000` | 20 KB | đọc, ghi, chạy lệnh (xrw) |
+
+Lưu ý: file `.ld` ghi `0x8000000` (7 chữ số), giá trị vẫn là `0x08000000`.
+
+### Stack nằm ở đâu?
+`_estack = ORIGIN(RAM) + LENGTH(RAM)` = `0x20000000` + `0x5000` = `0x20005000`. Đây là địa chỉ ngay sau byte cuối của RAM. Stack chạy từ đỉnh này xuống thấp, mỗi lần đẩy dữ liệu vào thì `sp` giảm.
+
+### `.isr_vector` đặt ở đâu, vì sao?
+Đặt ở **Flash**, để bảng vector nằm đúng `0x08000000`. Khi reset, CPU tự đọc hai ô nhớ đầu Flash: ô đầu nạp vào stack pointer, ô thứ hai là địa chỉ `Reset_Handler`.
+
+### `>RAM AT> FLASH` của `.data` nghĩa là gì?
+- `>RAM`: lúc chương trình chạy, `.data` nằm ở RAM (từ `_sdata` đến `_edata`).
+- `AT> FLASH`: lúc nạp vào chip, nội dung `.data` được cất trong Flash, địa chỉ cất là `_sidata`.
+- Khi khởi động, startup chép từ `_sidata` (Flash) sang `_sdata` (RAM). Cần như vậy vì Flash không ghi trực tiếp được còn RAM mất dữ liệu khi tắt nguồn.
+
+### Kết quả từ file `.map` và Build Console
+| Mục | Giá trị |
+|---|---|
+| Địa chỉ `main` | `0x08000170` |
+| Địa chỉ `Reset_Handler` | `0x08000178` |
+| `text` | 564 byte (code và bảng vector, nằm trong Flash) |
+| `data` | 0 byte |
+| `bss` | 1568 byte |
+
+`bss` lớn dù chưa có biến nào vì linker script chừa chỗ cho heap và stack trong RAM.
+
+### Điều học được
+1. Địa chỉ 32 bit luôn có 8 chữ số hex, đếm lại để tránh nhầm số 0 đầu.
+2. `.data` có hai địa chỉ: nơi cất (Flash) và nơi chạy (RAM). Startup chép giữa hai nơi đó.
+3. Dung lượng RAM 20 KB bị linker giữ chỗ cho heap và stack ngay từ đầu.
