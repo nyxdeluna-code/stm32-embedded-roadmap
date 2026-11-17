@@ -66,3 +66,46 @@ Lưu ý: file `.ld` ghi `0x8000000` (7 chữ số), giá trị vẫn là `0x0800
 1. Địa chỉ 32 bit luôn có 8 chữ số hex, đếm lại để tránh nhầm số 0 đầu.
 2. `.data` có hai địa chỉ: nơi cất (Flash) và nơi chạy (RAM). Startup chép giữa hai nơi đó.
 3. Dung lượng RAM 20 KB bị linker giữ chỗ cho heap và stack ngay từ đầu.
+
+## Ngày 3: Blink PC13 bằng thanh ghi (`w1_blink_reg`)
+
+### Cấu hình
+- Bật clock GPIOC: bit 4 (`IOPCEN`) của `RCC_APB2ENR`.
+- PC13 thuộc `GPIOC_CRH`, chiếm bit 20-23: xóa 4 bit rồi đặt `MODE = 10` (output 2 MHz), `CNF = 00` (push-pull).
+- Điều khiển bằng `GPIOC_BSRR`: bit 29 (`BR13`) kéo PC13 xuống Low (LED sáng), bit 13 (`BS13`) đưa PC13 lên High (LED tắt).
+
+### Code chính
+```c
+SET_BIT(RCC_APB2ENR, 4);
+GPIOC_CRH &= ~(0xFU << 20);
+GPIOC_CRH |=  (0x2U << 20);
+for (;;) {
+    GPIOC_BSRR = (1U << 29);   /* LED sáng */
+    delay(500000);
+    GPIOC_BSRR = (1U << 13);   /* LED tắt */
+    delay(500000);
+}
+```
+
+### Cách nạp
+[Điền: nạp qua CP2102 + bootloader UART (BOOT0 = 1) hay SWD, và cách khắc phục lỗi "Activating device: KO" nếu có.]
+
+### Kết quả đo (logic analyzer, chip chạy HSI 8 MHz)
+| `delay(n)` | Nửa chu kỳ | Chu kỳ |
+|---|---|---|
+| 500000 | 436,2 ms | 872,4 ms |
+| 1000000 | 872,5 ms | 1,745 s |
+
+Tăng gấp đôi `n` thì nửa chu kỳ tăng gấp đôi, xác nhận code chạy là code của mình. Tính ngược: 0,436 s × 8 MHz ≈ 3,49 triệu chu kỳ chia 500 000 vòng ≈ **7 chu kỳ mỗi vòng `while`**. Chưa ghi dự đoán trước khi nạp. Sai lệch nhỏ còn lại do HSI không chính xác (sai số vài phần trăm).
+
+### Câu hỏi và trả lời
+1. **Vì sao bật clock GPIOC trước?** Sau reset clock ngoại vi bị tắt để tiết kiệm điện, chưa bật thì ghi vào thanh ghi không có tác dụng.
+2. **PC13 thuộc CRL hay CRH?** CRH, bit 20-23 (chân 8-15 thuộc CRH, chân n nằm ở bit `(n-8)×4`).
+3. **Ghi 1 vào bit 29 của BSRR?** LED sáng: bit 29 là `BR13` kéo PC13 xuống Low, LED nối từ 3.3V nên có dòng chạy qua.
+4. **Vì sao `delay` dùng `volatile`?** Không có `volatile`, compiler thấy vòng lặp rỗng không có tác dụng và có thể xóa cả vòng lặp (khi tối ưu), làm delay biến mất.
+5. **Kết quả so với dự đoán?** Chưa có dự đoán trước. Tính ra khoảng 7 chu kỳ mỗi vòng, hợp lý vì `n` là `volatile` nên mỗi vòng phải đọc RAM, trừ, ghi lại, so sánh, nhảy.
+
+### Điều học được
+1. Chân GPIO chỉ hoạt động sau khi bật clock của cổng đó.
+2. Trước khi đặt giá trị mới vào một nhóm bit, phải xóa nhóm bit đó, các bit khác không đụng tới.
+3. Số đo thay đổi theo đúng tỉ lệ khi đổi tham số là cách kiểm tra chương trình đang chạy chính là code của mình.
