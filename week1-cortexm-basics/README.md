@@ -109,3 +109,48 @@ Tăng gấp đôi `n` thì nửa chu kỳ tăng gấp đôi, xác nhận code ch
 1. Chân GPIO chỉ hoạt động sau khi bật clock của cổng đó.
 2. Trước khi đặt giá trị mới vào một nhóm bit, phải xóa nhóm bit đó, các bit khác không đụng tới.
 3. Số đo thay đổi theo đúng tỉ lệ khi đổi tham số là cách kiểm tra chương trình đang chạy chính là code của mình.
+
+## Ngày 4: Clock tree lên 72 MHz (`w1_clock72`)
+
+### Mục tiêu
+Chuyển chip từ HSI 8 MHz sang 72 MHz bằng thanh ghi: HSE 8 MHz → PLL ×9 → SYSCLK.
+
+### Bảng bit
+| Việc | Thanh ghi, bit | Giá trị |
+|---|---|---|
+| Bật HSE, đợi `HSERDY` | `RCC_CR` bit 16, đợi bit 17 | 1 |
+| Flash wait states | `FLASH_ACR` bit 2:0 (`LATENCY`) | `010` (2 wait states) |
+| Prefetch | `FLASH_ACR` bit 4 | 1 |
+| Nguồn PLL = HSE | `RCC_CFGR` bit 16 (`PLLSRC`) | 1 |
+| Hệ số nhân ×9 | `RCC_CFGR` bit 21:18 (`PLLMUL`) | `0111` |
+| APB1 chia 2 | `RCC_CFGR` bit 10:8 (`PPRE1`) | `100` |
+| Bật PLL, đợi `PLLRDY` | `RCC_CR` bit 24, đợi bit 25 | 1 |
+| SYSCLK = PLL, đợi `SWS` | `RCC_CFGR` bit 1:0 (`SW`), đọc bit 3:2 | `10` |
+
+### Thứ tự bắt buộc
+HSE → đợi `HSERDY` → Flash wait states → cấu hình PLL và APB1 → bật PLL → đợi `PLLRDY` → `SW = PLL` → đợi `SWS`.
+
+- Flash đặt wait state **trước khi tăng clock**: Flash đọc chậm hơn CPU, ở 72 MHz cần 2 wait states, nếu không CPU đọc lệnh sai và chip treo.
+- Không sửa cấu hình PLL khi PLL đang chạy.
+- Phải đợi cờ `RDY` trước khi dùng vì phần cứng cần thời gian ổn định.
+- APB1 chia 2 vì ngoại vi APB1 chịu tối đa 36 MHz.
+
+### Lỗi đã gặp
+Điền nhầm địa chỉ thanh ghi (`0x40021004`) vào chỗ cần điền giá trị trường bit (`0x7` cho PLLMUL, `0x4` cho PPRE1). Giá trị đặt vào luôn là số nhỏ của trường bit, không phải địa chỉ.
+
+### Kết quả đo (logic analyzer, nửa chu kỳ blink PC13)
+| Clock | Wait state | `delay(n)` | Nửa chu kỳ | Chu kỳ máy mỗi vòng | Thời gian mỗi vòng |
+|---|---|---|---|---|---|
+| 8 MHz (HSI) | 0 | 500000 | 436,2 ms | ≈ 7 | 0,87 µs |
+| 8 MHz (HSI) | 2 | 100000 | 112,2 ms | ≈ 9 | 1,12 µs |
+| 72 MHz (PLL) | 2 | 1000000 | 125,0 ms | ≈ 9 | 0,125 µs |
+
+- Cùng code vòng lặp và cùng 2 wait states, thời gian mỗi vòng giảm từ 1,12 µs xuống 0,125 µs, tức giảm **đúng 9 lần**, khớp với 72 / 8.
+- Chỉ bật wait states (clock vẫn 8 MHz) đã làm vòng lặp chậm từ 7 lên 9 chu kỳ mỗi vòng (+29%), vì mỗi lần nhảy ngược CPU phải đọc lại Flash.
+- Bằng chứng này là **gián tiếp**: giả định số chu kỳ mỗi vòng không đổi. Kiểm chứng trực tiếp bằng chân MCO ở Ngày 5.
+- Chưa ghi dự đoán trước khi nạp.
+
+### Điều học được
+1. Muốn đổi tần số phải dựng chuỗi HSE → PLL → SYSCLK, không có thanh ghi nào nhận trực tiếp số MHz.
+2. Thứ tự cấu hình quan trọng: Flash trước, PLL sau, đổi nguồn SYSCLK cuối cùng.
+3. Đo thời gian bằng vòng `delay` không đáng tin vì phụ thuộc cấu hình Flash, cần SysTick hoặc đo clock trực tiếp.

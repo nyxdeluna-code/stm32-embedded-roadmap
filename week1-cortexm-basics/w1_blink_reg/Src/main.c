@@ -45,10 +45,10 @@ GPIOC_CRH |= (0x2U << 20);
     {
         /* 3. LED sáng */
 GPIOC_BSRR = (1U<<29);
-        delay(1000000);
+        delay(100000);
         /* 4. LED tắt */
 GPIOC_BSRR = (1U<<13);
-        delay(1000000);
+        delay(100000);
     }
 }
 
