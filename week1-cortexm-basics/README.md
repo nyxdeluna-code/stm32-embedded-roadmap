@@ -154,3 +154,87 @@ HSE → đợi `HSERDY` → Flash wait states → cấu hình PLL và APB1 → b
 1. Muốn đổi tần số phải dựng chuỗi HSE → PLL → SYSCLK, không có thanh ghi nào nhận trực tiếp số MHz.
 2. Thứ tự cấu hình quan trọng: Flash trước, PLL sau, đổi nguồn SYSCLK cuối cùng.
 3. Đo thời gian bằng vòng `delay` không đáng tin vì phụ thuộc cấu hình Flash, cần SysTick hoặc đo clock trực tiếp.
+
+## Ngày 5: Đo clock bằng MCO, SFRs và SysTick (`w1_mco`)
+
+### Mục tiêu
+Kiểm chứng chip chạy 72 MHz bằng bằng chứng trực tiếp, thay cho suy luận gián tiếp từ vòng `delay` ở Ngày 4.
+
+### Cấu hình MCO (xuất clock ra PA8)
+| Việc | Thanh ghi | Bit | Giá trị |
+|---|---|---|---|
+| Bật clock GPIOA | `RCC_APB2ENR` | bit 2 | 1 |
+| PA8 alternate function push-pull 50 MHz | `GPIOA_CRH` (`0x40010804`) | bit 3:0 | `0xB` |
+| Chọn nguồn MCO | `RCC_CFGR` | bit 26:24 | `0x6` = HSE, `0x7` = PLL/2 |
+
+- Chân MCO chịu tối đa 50 MHz nên không xuất được SYSCLK 72 MHz, phải xuất PLL/2 (36 MHz).
+- `MCO = 0x6` chỉ chọn HSE làm nguồn ra PA8. Việc bật HSE là dòng `SET_BIT(RCC_CR, 16)`.
+
+### 1. Đo MCO bằng logic analyzer (clone, tối đa 24 MS/s)
+| Nguồn MCO | Tần số thật | Đọc ở 8 MS/s | Đọc ở 24 MS/s | Kết luận |
+|---|---|---|---|---|
+| HSE (`MCO = 0x6`) | 8 MHz | 6 MHz (ảo) | **8 MHz** | đo trực tiếp, khớp |
+| PLL/2 (`MCO = 0x7`) | 36 MHz | 4 MHz (ảo) | 12 MHz (ảo) | khớp aliasing, chưa chứng minh được |
+
+- Aliasing: tần số giả = |f − k × fs|, k là số nguyên gần f/fs nhất. Với 36 MHz: |36 − 4×8| = 4 MHz, |36 − 1×24| = 12 MHz, đúng như đọc được.
+- Nhưng 12 MHz hoặc 60 MHz thật cũng cho cùng hình, nên **không ghi 4 và 12 MHz là kết quả đo**.
+- HSE ở 24 MS/s chỉ có 3 mẫu mỗi chu kỳ (125 ns). Duty 66,67% là sai số lượng tử (nửa chu kỳ thật 62,5 ns nằm giữa 1 và 2 mẫu), sóng thật là 50%.
+- Ảnh: `images/hse_24msps.png`, `images/pll2_24msps.png`, `images/hse_8msps.png`, `images/pll2_8msps.png`.
+
+### 2. Đọc tab SFRs (bằng chứng trực tiếp)
+Ký hiệu `[a:b]` trong SFRs là [vị trí bit bắt đầu : số bit]. Chụp lúc chương trình dừng ở breakpoint (bản code `MCO = 0x6`).
+
+| Trường | Giá trị | Ý nghĩa |
+|---|---|---|
+| `RCC_CR` `HSEON`, `HSERDY` | 1, 1 | thạch anh bật, ổn định |
+| `RCC_CR` `PLLON`, `PLLRDY` | 1, 1 | PLL bật, đã khóa tần số |
+| `RCC_CFGR` `PLLSRC` | 1 | nguồn PLL là HSE |
+| `RCC_CFGR` `PLLMUL` | 0x7 | nhân ×9, 8 × 9 = 72 MHz |
+| `RCC_CFGR` `SW` | 0x2 | yêu cầu SYSCLK = PLL |
+| `RCC_CFGR` `SWS` | **0x2** | phần cứng xác nhận SYSCLK lấy từ PLL |
+| `RCC_CFGR` `PPRE1` | 0x4 | APB1 chia 2, 36 MHz |
+| `RCC_CFGR` `HPRE`, `PPRE2` | 0, 0 | AHB, APB2 không chia, 72 MHz |
+| `RCC_CFGR` `MCO` | 0x6 | nguồn MCO = HSE |
+
+`SWS` do phần cứng đặt, không phải code ghi, nên đây là bằng chứng mạnh nhất. Ảnh: `images/sfrs_cr.png`, `images/sfrs_cfgr.png`.
+
+Ghi nhớ cho Tuần 3: `ADCPRE = 0` nghĩa là clock ADC = 72/2 = 36 MHz, vượt giới hạn 14 MHz, khi làm ADC phải đặt chia 6.
+
+### 3. Kiểm chứng bằng SysTick
+| Thanh ghi | Địa chỉ | Dùng |
+|---|---|---|
+| `SYST_CSR` | `0xE000E010` | bit 0 `ENABLE`, bit 1 `TICKINT`, bit 2 `CLKSOURCE`, bit 16 `COUNTFLAG` |
+| `SYST_RVR` | `0xE000E014` | đặt `72000 - 1` |
+| `SYST_CVR` | `0xE000E018` | ghi 0 để xóa bộ đếm |
+
+```c
+SYST_RVR = 72000 - 1;
+SYST_CVR = 0;
+SYST_CSR = 0x5;   /* ENABLE (1) + CLKSOURCE (4) */
+
+static void delay_ms(uint32_t ms)
+{
+    for (uint32_t i = 0; i < ms; i++)
+        while (!(SYST_CSR & (1U << 16))) { }
+}
+```
+
+- `CSR = 0x5`: bit 0 (1) + bit 2 (4). `CLKSOURCE = 1` đếm theo clock CPU, bằng 0 thì chia 8.
+- 72000 xung ở 72 MHz = 1 ms. Đọc `SYST_CSR` làm `COUNTFLAG` tự xóa.
+- Dự đoán nửa chu kỳ blink với `delay_ms(500)`: 72 MHz cho **500,0 ms**; quên `CLKSOURCE` cho khoảng 4000 ms; clock vẫn 8 MHz cho khoảng 4500 ms.
+- **Kết quả đo (Logic 2, 24 MS/s, kênh PC13): [ĐIỀN] ms.** Ảnh: `images/systick_blink.png`.
+- Nhận xét: [ĐIỀN: so với dự đoán, sai lệch bao nhiêu, vì sao]. Độ chính xác của phép đo phụ thuộc thạch anh 8 MHz của board (thường sai số vài chục ppm).
+
+### Lỗi đã gặp
+1. Thiếu `0x` ở địa chỉ `GPIOA_CRH`: số bị hiểu là thập phân, trỏ sai địa chỉ mà trình biên dịch không báo lỗi.
+2. Vòng `for` blink nằm trong thân vòng `while` chờ `SWS`: kết quả phụ thuộc thời điểm.
+3. `SYST_CSR = 0x2` thay vì `0x5`: bộ đếm không chạy, `delay_ms` kẹt mãi.
+4. Cấu hình SysTick đặt trong thân `while` chờ: có thể không chạy lần nào.
+5. `delay_ms` bỏ qua tham số `ms`, chỉ đợi 1 ms.
+
+Quy tắc: vòng `while` chờ cờ viết thân rỗng `{ }`, phần việc tiếp theo viết sau dấu `}`.
+
+### Điều học được
+1. Tần số hiện trên màn hình chỉ đúng khi tốc độ lấy mẫu đủ cao (từ 3 đến 4 mẫu mỗi chu kỳ); nếu không, đổi tốc độ lấy mẫu và so với công thức aliasing.
+2. Bằng chứng trực tiếp (cờ phần cứng `SWS`, bộ đếm SysTick) đáng tin hơn suy luận gián tiếp.
+3. Đặt code sai chỗ so với dấu `{ }` có thể cho kết quả phụ thuộc thời điểm, rất khó tìm.
