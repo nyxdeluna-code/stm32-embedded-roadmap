@@ -238,3 +238,56 @@ Quy tắc: vòng `while` chờ cờ viết thân rỗng `{ }`, phần việc ti�
 1. Tần số hiện trên màn hình chỉ đúng khi tốc độ lấy mẫu đủ cao (từ 3 đến 4 mẫu mỗi chu kỳ); nếu không, đổi tốc độ lấy mẫu và so với công thức aliasing.
 2. Bằng chứng trực tiếp (cờ phần cứng `SWS`, bộ đếm SysTick) đáng tin hơn suy luận gián tiếp.
 3. Đặt code sai chỗ so với dấu `{ }` có thể cho kết quả phụ thuộc thời điểm, rất khó tìm.
+
+## Ngày 6: Debug bằng ST-Link (`w1_mco`)
+
+### Thao tác
+Nạp và debug bằng ST-Link qua SWD (BOOT0 = 0), chạy Debug trong CubeIDE, đặt breakpoint ở dòng `GPIOC_BSRR = (1U << 29);`. Dùng các view: Variables, Expressions, Disassembly, Registers, SFRs.
+
+### Breakpoint và watchpoint
+- **Breakpoint:** dừng khi CPU chạy tới một dòng hoặc lệnh đã chọn.
+- **Watchpoint:** dừng khi một biến hoặc địa chỉ dữ liệu bị đọc hoặc ghi.
+
+### F5, F6, F7
+| Phím | Tên | Tác dụng |
+|---|---|---|
+| F5 | Step Into | đi vào bên trong hàm được gọi ở dòng hiện tại |
+| F6 | Step Over | chạy hết dòng hiện tại, nếu gọi hàm thì chạy trọn hàm, không đi vào |
+| F7 | Step Return | chạy tới khi thoát hàm hiện tại, quay về nơi gọi |
+
+### Assembly của `GPIOC_BSRR = (1U << 29);`
+```
+080002de:  ldr    r3, [pc, #76]    @ (0x800032c)
+080002e0:  mov.w  r2, #536870912   @ 0x20000000
+080002e4:  str    r2, [r3, #0]
+```
+- `ldr`: nạp hằng số `0x40011010` (địa chỉ `BSRR`) từ ô nhớ cạnh code. Hằng số 32 bit không nhét vừa lệnh 16 bit.
+- `mov.w`: đưa `0x20000000` (= `1U << 29`, compiler tính sẵn) vào `r2`. Chữ `.w` là lệnh 32 bit.
+- `str`: ghi `r2` vào địa chỉ trong `r3`, tức ghi vào `BSRR`.
+
+### Thanh ghi `pc` sau mỗi dòng
+| Dòng C | `pc` bắt đầu | Kích thước lệnh | `pc` sau |
+|---|---|---|---|
+| `GPIOC_BSRR = (1U << 29)` | `0x80002de` | 2 + 4 + 2 = 8 byte | `0x80002e6` |
+| `delay_ms(500)` | `0x80002e6` | 8 byte | `0x80002ee` |
+| `GPIOC_BSRR = (1U << 13)` | `0x80002ee` | 8 byte | `0x80002f6` |
+
+`pc` tăng đúng bằng kích thước lệnh (2 hoặc 4 byte với Thumb). Cuối vòng `for` có lệnh nhảy ngược về `0x80002de` [KIỂM TRA trong Disassembly: địa chỉ `0x80002fe`].
+
+### Read-modify-write: `RCC_CFGR &= ~(0x7U << 24);`
+```
+ldr r3, [pc, #80]    @ địa chỉ RCC_CFGR
+ldr r3, [r3, #0]     @ đọc giá trị cũ
+ldr r2, [pc, #76]    @ địa chỉ RCC_CFGR
+bic.w r3, r3, #0x7000000   @ xóa 3 bit MCO
+str r3, [r2, #0]     @ ghi lại
+```
+`|=` thành `orr.w` cùng kiểu. Hai dòng C là hai lần ghi riêng nên giữa chúng `MCO` tạm bằng `000`.
+
+### Thanh ghi báo lỗi lúc chương trình chạy bình thường
+`CFSR` (`0xE000ED28`) = `0x0`, `HFSR` (`0xE000ED2C`) = `0x0`: không có lỗi. Ảnh: `images/sfrs_cfsr.png`, `images/sfrs_hfsr.png`. Tuần 2 sẽ so sánh khi cố ý gây HardFault.
+
+### Điều học được
+1. Một dòng C ghi thanh ghi thành khoảng 3 lệnh: lấy địa chỉ, lấy giá trị, ghi.
+2. `pc` tăng đúng bằng kích thước lệnh vừa chạy; nhìn địa chỉ trong Disassembly là đếm được kích thước lệnh.
+3. Trạng thái lỗi nằm trong `CFSR` và `HFSR`, bình thường bằng 0.
