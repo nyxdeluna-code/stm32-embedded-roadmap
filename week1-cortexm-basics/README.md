@@ -222,7 +222,7 @@ static void delay_ms(uint32_t ms)
 - `CSR = 0x5`: bit 0 (1) + bit 2 (4). `CLKSOURCE = 1` đếm theo clock CPU, bằng 0 thì chia 8.
 - 72000 xung ở 72 MHz = 1 ms. Đọc `SYST_CSR` làm `COUNTFLAG` tự xóa.
 - Dự đoán nửa chu kỳ blink với `delay_ms(500)`: 72 MHz cho **500,0 ms**; quên `CLKSOURCE` cho khoảng 4000 ms; clock vẫn 8 MHz cho khoảng 4500 ms.
-- **Kết quả đo (Logic 2, 24 MS/s, kênh PC13): [ĐIỀN] ms.** Ảnh: `images/systick_blink.png`.
+- **Kết quả đo (Logic 2, 24 MS/s, kênh PC13): Đo được 499,939 ms so với dự đoán 500,0 ms, lệch 0,061 ms (khoảng 122 ppm). Độ lệch này nằm trong sai số của thạch anh Blue Pill và đồng hồ lấy mẫu của analyzer clone, nên kết luận clock đúng 72 MHz trong phạm vi 0,01%.** Ảnh: `images/systick_blink.png`.
 - Nhận xét: [ĐIỀN: so với dự đoán, sai lệch bao nhiêu, vì sao]. Độ chính xác của phép đo phụ thuộc thạch anh 8 MHz của board (thường sai số vài chục ppm).
 
 ### Lỗi đã gặp
@@ -291,3 +291,55 @@ str r3, [r2, #0]     @ ghi lại
 1. Một dòng C ghi thanh ghi thành khoảng 3 lệnh: lấy địa chỉ, lấy giá trị, ghi.
 2. `pc` tăng đúng bằng kích thước lệnh vừa chạy; nhìn địa chỉ trong Disassembly là đếm được kích thước lệnh.
 3. Trạng thái lỗi nằm trong `CFSR` và `HFSR`, bình thường bằng 0.
+
+# Tuần 2: Ngoại vi cơ bản
+
+## Ngày 1: Nút nhấn và ngắt ngoài EXTI (`w2_exti`)
+
+### Phần cứng
+Nút nhấn nối giữa PA0 và GND. PA0 ở chế độ input pull-up: thả nút thì mức 1, nhấn thì mức 0.
+
+### Cấu hình
+| Việc | Thanh ghi | Giá trị |
+|---|---|---|
+| PA0 input pull-up | `GPIOA_CRL` bit 3:0 | `0x8` (CNF = 10, MODE = 00) |
+| Chọn pull-up | `GPIOA_ODR` bit 0 | 1 |
+| Bật clock AFIO | `RCC_APB2ENR` bit 0 | 1 |
+| Nối PA0 với đường EXTI0 | `AFIO_EXTICR1` bit 3:0 | `0000` |
+| Kích hoạt ở cạnh xuống | `EXTI_FTSR` bit 0 | 1 |
+| Cho phép ngắt đường 0 | `EXTI_IMR` bit 0 | 1 |
+| Bật ngắt trong NVIC | `NVIC_ISER0` bit 6 | 1 (EXTI0 là IRQ 6) |
+
+Thứ tự: cấu hình xong rồi bật NVIC ở dòng cuối.
+
+### ISR
+```c
+void EXTI0_IRQHandler(void)
+{
+    if (EXTI_PR & (1U << 0)) {
+        EXTI_PR = (1U << 0);        /* xóa cờ pending: ghi 1 */
+        GPIOC_ODR ^= (1U << 13);    /* đảo LED PC13 */
+    }
+}
+```
+`EXTI_PR` do khối EXTI quản lý: chừng nào còn bằng 1 thì EXTI còn gửi yêu cầu ngắt lên NVIC, nên phải xóa trong ISR.
+
+### Thí nghiệm nút nảy
+Dự đoán: không chống dội thì LED đổi sai nhiều lần. Dùng logic analyzer (8 MS/s), D0 = PC13, D1 = nút PA0.
+
+| Bản code | Số lần nhấn | Số cạnh của D0 | Số cạnh thừa |
+|---|---|---|---|
+| Có `delay_ms(20)` + xóa cờ lần hai trong ISR | 20 | 33 | 13 |
+| Không chống dội | 20 | 36 (19 lên, 17 xuống) | 16 |
+
+- Không chống dội: nhiều xung D0 hẹp trùng thời gian D1 ở mức thấp, tức LED đổi lúc nhấn rồi đổi lại lúc thả (nút nảy tạo cạnh xuống nhiễu).
+- Có chống dội: mỗi lần nhấn LED đổi đúng một lần.
+- Ảnh zoom 0,27 ms mỗi pixel không thấy nhiễu, nhưng EXTI vẫn bắt được: xung ngắn hơn độ phân giải ảnh vẫn gây ngắt.
+- `delay_ms` trong ISR là giải pháp tạm vì chặn CPU, Ngày 2 làm lại bằng Timer.
+
+### Lỗi và bài học
+1. Điền nhầm giá trị `CNF` cho PA0 (`0xF` thay vì `0x8`).
+2. Nhận định sai: cho rằng nút ít nảy vì không thấy ở ảnh zoom, trong khi độ phân giải ảnh chưa đủ.
+
+### Điều học được
+[viết bằng lời của bạn, 2 đến 3 ý]

@@ -85,7 +85,7 @@ int main(void) {
 
 	/* 9. Chọn nguồn xuất ra MCO (PA8): đặt 0x6U (HSE) đo trước, sau đó đổi sang 0x7U (PLL/2) */
 	RCC_CFGR &= ~(0x7U << 24);
-	RCC_CFGR |= (0x7U << 24); // Đặt Breakpoint tại dòng dưới hoặc đầu vòng for để chụp SFRs
+	RCC_CFGR |= (0x6U << 24); // Đặt Breakpoint tại dòng dưới hoặc đầu vòng for để chụp SFRs
 
 	for (;;) {
 		GPIOC_BSRR = (1U << 29); /* LED sáng (kéo PC13 xuống mức 0) */
