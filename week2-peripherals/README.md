@@ -122,3 +122,74 @@ Dự đoán trước khi đo: 10 cạnh lên và 10 cạnh xuống, đúng với
 1. Nhầm `PSC` với tần số: ghi `PSC = 72 MHz`, thực tế `PSC` là số để chia và lưu giá trị trừ 1.
 2. `debounce_ms = 10U` trong khi comment ghi 20 ms: cần đọc lại số trong code khớp với ghi chú.
 3. Bật NVIC cho TIM2 trước khi cấu hình timer xong: nên đặt ở dòng
+
+## Ngày 3: UART gửi dữ liệu (TX)
+
+### Phần cứng
+CP2102 chân RXD nối **PA9** (USART1 TX), nối GND chung. Chưa dùng chân RX. Terminal: 115200, 8 data bit, no parity, 1 stop bit, flow control none.
+
+### Cấu hình USART1 (clock APB2 = 72 MHz)
+| Việc | Thanh ghi, địa chỉ | Giá trị |
+|---|---|---|
+| Bật clock USART1 | `RCC_APB2ENR` bit 14 (`USART1EN`) | 1 |
+| PA9 alternate function push-pull 50 MHz | `GPIOA_CRH` bit 7:4 | `0xB` |
+| Tốc độ 115200 | `USART1_BRR` `0x40013808` | `0x271` |
+| Bật USART và bộ gửi | `USART1_CR1` `0x4001380C` | `0x2008` (bit 13 `UE` + bit 3 `TE`) |
+| Cờ trạng thái | `USART1_SR` `0x40013800` | bit 7 `TXE` |
+| Thanh ghi dữ liệu | `USART1_DR` `0x40013804` | ghi ký tự |
+
+`BRR = 72 000 000 / 115 200 = 625 = 0x271`. Phần nguyên `0x27` = 39, phần lẻ `0x1` = 1/16, nên 39,0625 và tốc độ thật = 72 MHz / (16 × 39,0625) = đúng 115 200 baud, không sai số.
+
+### Code gửi
+```c
+static void uart_putc(char c)
+{
+    while (!(USART1_SR & (1U << 7))) { }   /* đợi TXE */
+    USART1_DR = c;
+}
+
+static void uart_puts(const char *s)
+{
+    while (*s) {
+        uart_putc(*s);
+        s++;
+    }
+}
+```
+Vòng chính: `uart_puts("Hello STM32\r\n"); delay_ms(500);`
+
+### Kết quả
+- Terminal hiện `Hello STM32` mỗi 0,5 giây.
+- Analyzer (Async Serial 115200 8N1) giải mã đúng 13 byte: `0x48 0x65 0x6C 0x6C 0x6F 0x20 0x53 0x54 0x4D 0x33 0x32 0x0D 0x0A`.
+
+| Đại lượng | Tính | Đo |
+|---|---|---|
+| Một bit | 1 / 115200 = 8,68 µs | chưa đo trực tiếp |
+| Một frame (10 bit) | 86,8 µs | 86,75 µs (khoảng cách giữa hai start liên tiếp) |
+| Cả chuỗi 13 ký tự | 1,128 ms | 1,128 ms (1,0415 ms đến start cuối, cộng 86,8 µs) |
+| Chu kỳ gửi chuỗi | khoảng 500 ms | 499,939 ms |
+
+- Cột Duration 82,375 µs của Logic 2 không dùng làm thời gian frame (suy đoán là tính đến giữa stop bit, chưa kiểm chứng).
+- 499,939 ms trùng với số đo SysTick ở Tuần 1 (lệch 0,061 ms): nguồn sai số nhiều khả năng là đồng hồ của thạch anh hoặc analyzer, khoảng 122 ppm.
+- Suy luận từ số đo (chưa kiểm chứng): chu kỳ ngắn hơn 501,1 ms mong đợi vì `COUNTFLAG` của SysTick bật trong lúc gửi nên lần đợi đầu của `delay_ms` trả về ngay, nghĩa là `delay_ms(n)` có thể ngắn hơn tối đa 1 ms.
+
+### Câu hỏi và trả lời
+1. **Một frame 8N1 gồm những bit nào, mất bao lâu?** 10 bit: 1 start (mức 0) + 8 data + 1 stop (mức 1), mỗi bit 8,68 µs nên một frame 86,8 µs. Cả chuỗi 13 ký tự khoảng 1,13 ms.
+2. **Vì sao đợi `TXE` trước khi ghi `DR`?** `TXE = 1` nghĩa là dữ liệu trước đã chuyển sang thanh ghi dịch, `DR` trống. Ghi khi còn bận thì đè mất ký tự trước. `TC` khác: báo toàn bộ frame đã ra khỏi chân.
+3. **`BRR` tính thế nào?** `72 000 000 / 115 200 = 625 = 0x271`.
+
+### Lỗi đã gặp
+1. Câu 1 lần đầu: bỏ sót start bit và nhầm 498,8 ms (khoảng cách giữa hai lần gửi) với thời gian của frame.
+
+## Lỗi đã gặp trong tuần (Ngày 1, 2)
+| Lỗi | Vì sao sai | Quy tắc nhớ |
+|---|---|---|
+| `CNF` cho PA0 điền `0xF` thay vì `0x8` | `0xF` = output 50 MHz + alternate open-drain, không phải input | Đọc `MODE` và `CNF` từng cặp bit |
+| `EXTI_IMR &= ~(0xFU << 0)` | `0xF` là 4 bit, tắt luôn đường 0 đến 3 | `1U` cho 1 bit, `0x7` cho 3 bit, `0xF` cho 4 bit |
+| Gọi `debounce_ms(20)` như hàm trong khi nó là biến | Cùng một tên dùng hai kiểu | Khai báo biến `static volatile`, gán `debounce_ms = 20U` |
+| Dòng xóa `UIF` nằm trong comment | Cờ không bao giờ được xóa, ISR chạy lặp, chip treo | Sau khi viết ISR, đọc lại xem dòng xóa cờ có thật chạy không |
+| `GPIOC_ORD` | Gõ sai tên thanh ghi, trình biên dịch báo ngay | Đọc tên từng chữ cái |
+| `^=` để bật lại `EXTI_IMR` | Nhận xét của AI cho rằng MISRA yêu cầu `\|=`, điều này không đúng. Lý do thật: `\|=` luôn đặt bit lên 1, `^=` đảo bit nên sai nếu bit đã là 1 | `\|=` để bật, `&= ~` để tắt, `^=` để đảo |
+| `PSC = 72 MHz` | `PSC` là số chia, lưu giá trị trừ 1 | `PSC = 72 - 1` |
+| `debounce_ms = 10U` trong khi ghi chú 20 ms | Số trong code và ghi chú lệch nhau | Đọc lại số trong code khớp với ghi chú |
+| Dự đoán 1 ISR = 1 lần đổi LED, nhận định từ ảnh 20 s | Ảnh độ phân giải thấp không thấy nhiễu | Đếm cạnh bằng số liệu, không nhìn bằng mắt |
